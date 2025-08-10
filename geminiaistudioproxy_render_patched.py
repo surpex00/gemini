@@ -30,7 +30,7 @@ from flask_cors import CORS
 
 def strip_tags(text):
     # Remove <response>, </response>, <think>, </think> tags
-    return re.sub(r'</?response>|</?think>', '', text)
+    return re.sub(r'<response>|</think>', '', text)
 
 # Configuration settings
 # @markdown ## Connection Settings
