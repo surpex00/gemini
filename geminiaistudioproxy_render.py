@@ -116,7 +116,6 @@ try:
         from flask_cloudflared import run_with_cloudflared
         run_with_cloudflared(app)
     else:
-        !pip install -q flask_localtunnel
         from flask_lt import run_with_lt
         run_with_lt(app)
 except Exception as e:
