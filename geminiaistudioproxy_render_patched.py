@@ -19,18 +19,12 @@ Original file is located at
 # Install required packages
 
 import json
-import re
 import time
 import requests
 import traceback
 import re
 from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
-
-
-def strip_tags(text):
-    # Remove <response>, </response>, <think>, </think> tags
-    return re.sub(r'<response>|</think>', '', text)
 
 # Configuration settings
 # @markdown ## Connection Settings
@@ -539,9 +533,6 @@ def handle_proxy():
 
                                     # Process the chunk through our enhanced parser
                                     content_to_send, thinking_for_colab, is_complete = parser.process_chunk(content_delta)
-
-                                    # Strip unwanted tags from the output
-                                    content_to_send = strip_tags(content_to_send)
                                     
                                     # Display thinking in Colab if available
                                     if thinking_for_colab and display_thinking_in_colab:
