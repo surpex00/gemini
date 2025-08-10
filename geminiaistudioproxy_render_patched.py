@@ -35,10 +35,10 @@ tunnel_provider = "Cloudflare" # @param ["Cloudflare", "Localtunnel"]
 # @markdown ## Google AI Settings
 
 # @markdown **Google AI Model** (select the model you want to use)
-model = "gemini-2.5-pro" # @param [ "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite-preview-06-17"]
+model = "gemini-2.5-flash" # @param [ "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite-preview-06-17"]
 
 # @markdown **Temperature**: Controls creativity (higher = more random)
-temperature = 0.8 # @param {type:"slider", min:0, max:2.0, step:0.01}
+temperature = 0.9 # @param {type:"slider", min:0, max:2.0, step:0.01}
 
 # @markdown ## Feature Settings (nsfw on by default)
 
