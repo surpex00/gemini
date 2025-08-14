@@ -1,4 +1,3 @@
-flask
-flask-cors
-requests
-flask_cloudflared
+fastapi
+uvicorn
+httpx
