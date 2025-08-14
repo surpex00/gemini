@@ -5,7 +5,7 @@
 
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 import httpx
 import os
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,6 +25,8 @@ app.add_middleware(
 # Set your Gemini API key as an environment variable on Render
 
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+GEMINI_API_STREAM_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent"
+
 
 
 @app.post("/v1/chat/completions")
@@ -60,7 +62,53 @@ async def chat_completions(request: Request):
     headers = {"Content-Type": "application/json"}
     params = {"key": api_key}
 
-    # Call Gemini 2.5 Flash API
+    # Streaming support
+    if body.get("stream"):
+        async def event_generator():
+            stream_url = GEMINI_API_STREAM_URL
+            try:
+                async with httpx.AsyncClient(timeout=60) as client:
+                    async with client.stream("POST", stream_url, params=params, headers=headers, json=gemini_payload) as resp:
+                        async for line in resp.aiter_lines():
+                            if not line.strip():
+                                continue
+                            # Gemini streaming returns JSON per line
+                            try:
+                                data = httpx.Response(200, content=line).json()
+                                # Extract text from Gemini chunk
+                                text = ""
+                                if "candidates" in data and data["candidates"]:
+                                    candidate = data["candidates"][0]
+                                    if "content" in candidate and "parts" in candidate["content"]:
+                                        for part in candidate["content"]["parts"]:
+                                            if "text" in part:
+                                                text += part["text"]
+                                if text:
+                                    # OpenAI streaming format: data: {json}\n\n
+                                    chunk = {
+                                        "id": "chatcmpl-proxy-stream",
+                                        "object": "chat.completion.chunk",
+                                        "created": 0,
+                                        "model": "gemini-2.5-flash-proxy",
+                                        "choices": [
+                                            {
+                                                "index": 0,
+                                                "delta": {"content": text},
+                                                "finish_reason": None
+                                            }
+                                        ]
+                                    }
+                                    yield f"data: {chunk}\n\n".replace("'", '"')
+                            except Exception:
+                                continue
+                # End of stream
+                yield "data: [DONE]\n\n"
+            except Exception as e:
+                yield f"data: {{'error': '{str(e)}'}}\n\n"
+
+        return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+    # Non-streaming (regular) response
     async with httpx.AsyncClient() as client:
         try:
             resp = await client.post(GEMINI_API_URL, params=params, headers=headers, json=gemini_payload, timeout=30)
