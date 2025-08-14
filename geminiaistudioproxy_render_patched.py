@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 import httpx
 import os
+import json
 from fastapi.middleware.cors import CORSMiddleware
 
 
@@ -84,7 +85,6 @@ async def chat_completions(request: Request):
                                             if "text" in part:
                                                 text += part["text"]
                                 if text:
-                                    # OpenAI streaming format: data: {json}\n\n
                                     chunk = {
                                         "id": "chatcmpl-proxy-stream",
                                         "object": "chat.completion.chunk",
@@ -98,13 +98,13 @@ async def chat_completions(request: Request):
                                             }
                                         ]
                                     }
-                                    yield f"data: {chunk}\n\n".replace("'", '"')
+                                    yield f"data: {json.dumps(chunk)}\n\n"
                             except Exception:
                                 continue
                 # End of stream
                 yield "data: [DONE]\n\n"
             except Exception as e:
-                yield f"data: {{'error': '{str(e)}'}}\n\n"
+                yield f"data: {{\"error\": \"{str(e)}\"}}\n\n"
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")
 
