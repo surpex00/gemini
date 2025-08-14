@@ -8,8 +8,19 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 import httpx
 import os
+from fastapi.middleware.cors import CORSMiddleware
+
 
 app = FastAPI()
+
+# Enable CORS for all origins (adjust origins as needed for more security)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
 
 # Set your Gemini API key as an environment variable on Render
 
