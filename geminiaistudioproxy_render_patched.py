@@ -65,6 +65,7 @@ async def chat_completions(request: Request):
     # Streaming support
     if body.get("stream"):
         async def event_generator():
+            buffer = "" # Initialize a buffer to accumulate lines
             stream_url = GEMINI_API_STREAM_URL
             try:
                 async with httpx.AsyncClient(timeout=60) as client:
@@ -72,10 +73,15 @@ async def chat_completions(request: Request):
                         async for line in resp.aiter_lines():
                             if not line.strip():
                                 continue
-                            # Gemini streaming returns JSON per line
                             print(f"Received raw line from Gemini: {line}") # Debugging line
+                            buffer += line.strip() # Append line to buffer, remove leading/trailing whitespace
+
+                            if not buffer: # Skip if buffer is empty after stripping
+                                continue
+
                             try:
-                                data = json.loads(line)
+                                # Try to parse the buffer as a complete JSON object
+                                data = json.loads(buffer)
                                 print(f"Parsed JSON from Gemini: {data}") # Debugging line
                                 # Extract text and finish_reason from Gemini chunk
                                 text = ""
@@ -106,8 +112,11 @@ async def chat_completions(request: Request):
                                     json_chunk = json.dumps(chunk)
                                     print(f"Yielding chunk to JanitorAI: {json_chunk}") # Debugging line
                                     yield f"data: {json_chunk}\n\n"
+                                buffer = "" # Clear buffer on successful parse
                             except json.JSONDecodeError as e:
-                                print(f"JSON Decode Error: {e} for line: {line}") # Debugging line
+                                # If parsing fails, it means we don't have a complete JSON object yet.
+                                # Continue accumulating in the buffer.
+                                print(f"JSON Decode Error (buffering): {e} for current buffer: {buffer[:100]}...") # Debugging line
                                 continue
                             except Exception as e:
                                 print(f"Error processing Gemini stream data: {e}") # Debugging line
@@ -115,6 +124,7 @@ async def chat_completions(request: Request):
                 # End of stream
                 yield "data: [DONE]\n\n"
             except Exception as e:
+                print(f"Top-level streaming error: {e}") # Debugging line
                 yield f"data: {{\"error\": \"{str(e)}\"}}\n\n"
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")
