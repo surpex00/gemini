@@ -66,7 +66,6 @@ async def chat_completions(request: Request):
     if body.get("stream"):
         async def event_generator():
             buffer = ""
-            decoder = json.JSONDecoder() # Initialize JSON decoder
             stream_url = GEMINI_API_STREAM_URL
             try:
                 async with httpx.AsyncClient(timeout=60) as client:
@@ -77,27 +76,107 @@ async def chat_completions(request: Request):
                             print(f"Received raw line from Gemini: {line}") # Debugging line
                             buffer += line.strip()
 
-                            while buffer:
-                                try:
-                                    # Attempt to decode a JSON object from the beginning of the buffer
-                                    data, consumed_chars = decoder.raw_decode(buffer)
-                                    print(f"Parsed JSON from Gemini: {data}") # Debugging line
+                            # Attempt to find and parse complete JSON objects from the buffer
+                            # This loop will continue as long as there are potential JSON objects in the buffer
+                            while True:
+                                open_brace_count = 0
+                                close_brace_count = 0
+                                json_start_index = -1
+                                json_end_index = -1
 
-                                    # Extract text and finish_reason from Gemini chunk
+                                # Iterate through the buffer to find a balanced JSON object
+                                for i, char in enumerate(buffer):
+                                    if char == '{':
+                                        if json_start_index == -1: # Mark the start of the first object
+                                            json_start_index = i
+                                        open_brace_count += 1
+                                    elif char == '}':
+                                        close_brace_count += 1
+
+                                    # If we found an opening brace and the counts are balanced, we have a complete object
+                                    if json_start_index != -1 and open_brace_count > 0 and open_brace_count == close_brace_count:
+                                        json_end_index = i
+                                        break # Found a complete JSON object
+
+                                if json_start_index != -1 and json_end_index != -1:
+                                    # Extract the potential JSON string
+                                    json_str = buffer[json_start_index : json_end_index + 1]
+                                    try:
+                                        data = json.loads(json_str)
+                                        print(f"Parsed JSON from Gemini: {data}") # Debugging line
+
+                                        # Extract text and finish_reason from Gemini chunk
+                                        text = ""
+                                        finish_reason = None
+                                        if "candidates" in data and data["candidates"]:
+                                            candidate = data["candidates"][0]
+                                            if "content" in candidate and "parts" in candidate["content"]:
+                                                for part in candidate["content"]["parts"]:
+                                                    if "text" in part:
+                                                        text += part["text"]
+                                            if "finishReason" in candidate:
+                                                finish_reason = candidate["finishReason"]
+
+                                        if text or finish_reason:
+                                            chunk = {
+                                                "id": "chatcmpl-proxy-stream",
+                                                "object": "chat.completion.chunk",
+                                                "created": 0,
+                                                "model": "gemini-2.5-flash-proxy",
+                                                "choices": [
+                                                    {
+                                                        "index": 0,
+                                                        "delta": {"content": text},
+                                                        "finish_reason": finish_reason
+                                                    }
+                                                ]
+                                            }
+                                            json_chunk = json.dumps(chunk)
+                                            print(f"Yielding chunk to JanitorAI: {json_chunk}") # Debugging line
+                                            yield f"data: {json_chunk}\n\n"
+
+                                        # Remove the successfully parsed JSON object and any leading/trailing non-JSON chars
+                                        # up to the end of the parsed object from the buffer.
+                                        buffer = buffer[json_end_index + 1:].strip()
+                                        print(f"Remaining buffer: {buffer[:100]}...") # Debugging line
+                                        # Continue the while loop to check for more objects in the remaining buffer
+                                        continue
+                                    except json.JSONDecodeError as e:
+                                        # If the extracted json_str is not valid JSON, it means our brace counting was off
+                                        # or the data is truly malformed. Break from this inner loop to get more lines.
+                                        print(f"JSON Decode Error (inner parse): {e} for json_str: {json_str[:100]}...") # Debugging line
+                                        break
+                                    except Exception as e:
+                                        print(f"Error processing Gemini stream data (inner): {e}") # Debugging line
+                                        break # Break from inner loop if unexpected error
+                                else:
+                                    # No complete JSON object found in the current buffer, need more data
+                                    break # Break from inner while loop, get more lines from the stream
+
+                # After the stream ends, check if there's any remaining data in the buffer
+                if buffer.strip():
+                    print(f"Stream ended with remaining buffer: {buffer[:100]}...")
+                    # At this point, any remaining buffer is likely an incomplete fragment or malformed data.
+                    # We can try a final parse if it looks like a list, but generally, it's best to discard.
+                    # For robustness, we'll try to parse it as a list if it starts with '['
+                    if buffer.strip().startswith('['):
+                        try:
+                            final_data = json.loads(buffer.strip())
+                            if isinstance(final_data, list):
+                                for item in final_data:
                                     text = ""
                                     finish_reason = None
-                                    if "candidates" in data and data["candidates"]:
-                                        candidate = data["candidates"][0]
+                                    if "candidates" in item and item["candidates"]:
+                                        candidate = item["candidates"][0]
                                         if "content" in candidate and "parts" in candidate["content"]:
                                             for part in candidate["content"]["parts"]:
                                                 if "text" in part:
                                                     text += part["text"]
                                         if "finishReason" in candidate:
                                             finish_reason = candidate["finishReason"]
-
                                     if text or finish_reason:
                                         chunk = {
-                                            "id": "chatcmpl-proxy-stream",
+                                            "id": "chatcmpl-proxy-stream-final",
                                             "object": "chat.completion.chunk",
                                             "created": 0,
                                             "model": "gemini-2.5-flash-proxy",
@@ -110,63 +189,14 @@ async def chat_completions(request: Request):
                                             ]
                                         }
                                         json_chunk = json.dumps(chunk)
-                                        print(f"Yielding chunk to JanitorAI: {json_chunk}") # Debugging line
+                                        print(f"Yielding final chunk to JanitorAI: {json_chunk}")
                                         yield f"data: {json_chunk}\n\n"
-
-                                    # Remove the consumed part from the buffer
-                                    buffer = buffer[consumed_chars:].strip()
-                                    print(f"Remaining buffer: {buffer[:100]}...") # Debugging line
-
-                                except json.JSONDecodeError as e:
-                                    # If JSONDecodeError occurs, it means the buffer does not contain a complete JSON object yet.
-                                    # Break from this inner loop to get more lines from the stream.
-                                    print(f"JSON Decode Error (buffering): {e} for current buffer: {buffer[:100]}...") # Debugging line
-                                    break
-                                except Exception as e:
-                                    print(f"Error processing Gemini stream data: {e}") # Debugging line
-                                    # If other errors occur, clear buffer and break to avoid infinite loop
-                                    buffer = ""
-                                    break
-
-                # After the stream ends, check if there's any remaining data in the buffer
-                if buffer.strip():
-                    print(f"Stream ended with remaining buffer: {buffer[:100]}...")
-                    # Attempt one last time to parse any remaining JSON
-                    try:
-                        data, consumed_chars = decoder.raw_decode(buffer)
-                        print(f"Parsed final buffer data: {data}")
-                        # Re-use the chunk creation logic for remaining items
-                        text = ""
-                        finish_reason = None
-                        if "candidates" in data and data["candidates"]:
-                            candidate = data["candidates"][0]
-                            if "content" in candidate and "parts" in candidate["content"]:
-                                for part in candidate["content"]["parts"]:
-                                    if "text" in part:
-                                        text += part["text"]
-                            if "finishReason" in candidate:
-                                finish_reason = candidate["finishReason"]
-                        if text or finish_reason:
-                            chunk = {
-                                "id": "chatcmpl-proxy-stream-final",
-                                "object": "chat.completion.chunk",
-                                "created": 0,
-                                "model": "gemini-2.5-flash-proxy",
-                                "choices": [
-                                    {
-                                        "index": 0,
-                                        "delta": {"content": text},
-                                        "finish_reason": finish_reason
-                                    }
-                                ]
-                            }
-                            json_chunk = json.dumps(chunk)
-                            print(f"Yielding final chunk to JanitorAI: {json_chunk}")
-                            yield f"data: {json_chunk}\n\n"
-                    except json.JSONDecodeError as e:
-                        print(f"Final buffer JSON Decode Error: {e} for buffer: {buffer[:100]}...")
-                    except Exception as e:
-                        print(f"Error processing final buffer: {e}")
+                        except json.JSONDecodeError as e:
+                            print(f"Final buffer JSON Decode Error (list parse): {e} for buffer: {buffer[:100]}...")
+                        except Exception as e:
+                            print(f"Error processing final buffer (list parse): {e}")
+                    else:
+                        print(f"Discarding remaining buffer (not a list or complete object): {buffer[:100]}...")
 
                 yield "data: [DONE]\n\n"
             except Exception as e:
