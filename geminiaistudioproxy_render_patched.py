@@ -1,4 +1,3 @@
-
 # Gemini 2.5 Flash Proxy for Janitor.ai (OpenAI-compatible)
 # To run: python -m venv venv && source venv/bin/activate && pip install fastapi uvicorn httpx
 # Deployable on Render.com
@@ -74,17 +73,23 @@ async def chat_completions(request: Request):
                             if not line.strip():
                                 continue
                             # Gemini streaming returns JSON per line
+                            print(f"Received raw line from Gemini: {line}") # Debugging line
                             try:
-                                data = httpx.Response(200, content=line).json()
-                                # Extract text from Gemini chunk
+                                data = json.loads(line)
+                                print(f"Parsed JSON from Gemini: {data}") # Debugging line
+                                # Extract text and finish_reason from Gemini chunk
                                 text = ""
+                                finish_reason = None
                                 if "candidates" in data and data["candidates"]:
                                     candidate = data["candidates"][0]
                                     if "content" in candidate and "parts" in candidate["content"]:
                                         for part in candidate["content"]["parts"]:
                                             if "text" in part:
                                                 text += part["text"]
-                                if text:
+                                    if "finishReason" in candidate:
+                                        finish_reason = candidate["finishReason"]
+
+                                if text or finish_reason:
                                     chunk = {
                                         "id": "chatcmpl-proxy-stream",
                                         "object": "chat.completion.chunk",
@@ -94,12 +99,18 @@ async def chat_completions(request: Request):
                                             {
                                                 "index": 0,
                                                 "delta": {"content": text},
-                                                "finish_reason": None
+                                                "finish_reason": finish_reason
                                             }
                                         ]
                                     }
-                                    yield f"data: {json.dumps(chunk)}\n\n"
-                            except Exception:
+                                    json_chunk = json.dumps(chunk)
+                                    print(f"Yielding chunk to JanitorAI: {json_chunk}") # Debugging line
+                                    yield f"data: {json_chunk}\n\n"
+                            except json.JSONDecodeError as e:
+                                print(f"JSON Decode Error: {e} for line: {line}") # Debugging line
+                                continue
+                            except Exception as e:
+                                print(f"Error processing Gemini stream data: {e}") # Debugging line
                                 continue
                 # End of stream
                 yield "data: [DONE]\n\n"
