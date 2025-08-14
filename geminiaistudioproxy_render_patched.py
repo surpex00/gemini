@@ -66,6 +66,7 @@ async def chat_completions(request: Request):
     if body.get("stream"):
         async def event_generator():
             buffer = ""
+            decoder = json.JSONDecoder() # Initialize JSON decoder
             stream_url = GEMINI_API_STREAM_URL
             try:
                 async with httpx.AsyncClient(timeout=60) as client:
@@ -76,20 +77,10 @@ async def chat_completions(request: Request):
                             print(f"Received raw line from Gemini: {line}") # Debugging line
                             buffer += line.strip()
 
-                            # Attempt to find and parse complete JSON objects from the buffer
-                            while True:
+                            while buffer:
                                 try:
-                                    # Find the first occurrence of '{' and the last '}'
-                                    start_idx = buffer.find('{')
-                                    end_idx = buffer.rfind('}')
-
-                                    if start_idx == -1 or end_idx == -1 or end_idx < start_idx:
-                                        # No complete JSON object found yet, continue buffering
-                                        break
-
-                                    # Extract what looks like a complete JSON object
-                                    json_str = buffer[start_idx : end_idx + 1]
-                                    data = json.loads(json_str)
+                                    # Attempt to decode a JSON object from the beginning of the buffer
+                                    data, consumed_chars = decoder.raw_decode(buffer)
                                     print(f"Parsed JSON from Gemini: {data}") # Debugging line
 
                                     # Extract text and finish_reason from Gemini chunk
@@ -122,90 +113,56 @@ async def chat_completions(request: Request):
                                         print(f"Yielding chunk to JanitorAI: {json_chunk}") # Debugging line
                                         yield f"data: {json_chunk}\n\n"
 
-                                    # Remove the parsed JSON object from the buffer
-                                    buffer = buffer[end_idx + 1:].strip()
+                                    # Remove the consumed part from the buffer
+                                    buffer = buffer[consumed_chars:].strip()
                                     print(f"Remaining buffer: {buffer[:100]}...") # Debugging line
 
                                 except json.JSONDecodeError as e:
-                                    # If parsing fails, it means the extracted json_str was not valid JSON.
-                                    # This could happen if it's an incomplete object or malformed.
-                                    # Continue buffering and try again with more data.
-                                    print(f"JSON Decode Error (buffering): {e} for current json_str: {json_str[:100]}...") # Debugging line
-                                    break # Break from inner while loop, get more lines
+                                    # If JSONDecodeError occurs, it means the buffer does not contain a complete JSON object yet.
+                                    # Break from this inner loop to get more lines from the stream.
+                                    print(f"JSON Decode Error (buffering): {e} for current buffer: {buffer[:100]}...") # Debugging line
+                                    break
                                 except Exception as e:
                                     print(f"Error processing Gemini stream data: {e}") # Debugging line
-                                    break # Break from inner while loop, get more lines
+                                    # If other errors occur, clear buffer and break to avoid infinite loop
+                                    buffer = ""
+                                    break
 
                 # After the stream ends, check if there's any remaining data in the buffer
                 if buffer.strip():
                     print(f"Stream ended with remaining buffer: {buffer[:100]}...")
-                    # Attempt to parse any final complete JSON objects
+                    # Attempt one last time to parse any remaining JSON
                     try:
-                        final_data = json.loads(buffer.strip())
-                        # Process final_data if it's a valid JSON object or array
-                        # This part might need more specific logic depending on how Gemini ends its stream
-                        print(f"Parsed final buffer data: {final_data}")
-                        # You might need to iterate if final_data is an array
-                        if isinstance(final_data, list):
-                            for item in final_data:
-                                # Re-use the chunk creation logic for remaining items
-                                text = ""
-                                finish_reason = None
-                                if "candidates" in item and item["candidates"]:
-                                    candidate = item["candidates"][0]
-                                    if "content" in candidate and "parts" in candidate["content"]:
-                                        for part in candidate["content"]["parts"]:
-                                            if "text" in part:
-                                                text += part["text"]
-                                    if "finishReason" in candidate:
-                                        finish_reason = candidate["finishReason"]
-                                if text or finish_reason:
-                                    chunk = {
-                                        "id": "chatcmpl-proxy-stream-final",
-                                        "object": "chat.completion.chunk",
-                                        "created": 0,
-                                        "model": "gemini-2.5-flash-proxy",
-                                        "choices": [
-                                            {
-                                                "index": 0,
-                                                "delta": {"content": text},
-                                                "finish_reason": finish_reason
-                                            }
-                                        ]
+                        data, consumed_chars = decoder.raw_decode(buffer)
+                        print(f"Parsed final buffer data: {data}")
+                        # Re-use the chunk creation logic for remaining items
+                        text = ""
+                        finish_reason = None
+                        if "candidates" in data and data["candidates"]:
+                            candidate = data["candidates"][0]
+                            if "content" in candidate and "parts" in candidate["content"]:
+                                for part in candidate["content"]["parts"]:
+                                    if "text" in part:
+                                        text += part["text"]
+                            if "finishReason" in candidate:
+                                finish_reason = candidate["finishReason"]
+                        if text or finish_reason:
+                            chunk = {
+                                "id": "chatcmpl-proxy-stream-final",
+                                "object": "chat.completion.chunk",
+                                "created": 0,
+                                "model": "gemini-2.5-flash-proxy",
+                                "choices": [
+                                    {
+                                        "index": 0,
+                                        "delta": {"content": text},
+                                        "finish_reason": finish_reason
                                     }
-                                    json_chunk = json.dumps(chunk)
-                                    print(f"Yielding final chunk to JanitorAI: {json_chunk}")
-                                    yield f"data: {json_chunk}\n\n"
-                        elif isinstance(final_data, dict):
-                            # Handle as a single final object if it's not an array
-                            text = ""
-                            finish_reason = None
-                            if "candidates" in final_data and final_data["candidates"]:
-                                candidate = final_data["candidates"][0]
-                                if "content" in candidate and "parts" in candidate["content"]:
-                                    for part in candidate["content"]["parts"]:
-                                        if "text" in part:
-                                            text += part["text"]
-                                if "finishReason" in candidate:
-                                    finish_reason = candidate["finishReason"]
-                            if text or finish_reason:
-                                chunk = {
-                                    "id": "chatcmpl-proxy-stream-final",
-                                    "object": "chat.completion.chunk",
-                                    "created": 0,
-                                    "model": "gemini-2.5-flash-proxy",
-                                    "choices": [
-                                        {
-                                            "index": 0,
-                                            "delta": {"content": text},
-                                            "finish_reason": finish_reason
-                                        }
-                                    ]
-                                }
-                                json_chunk = json.dumps(chunk)
-                                print(f"Yielding final chunk to JanitorAI: {json_chunk}")
-                                yield f"data: {json_chunk}\n\n"
-
+                                ]
+                            }
+                            json_chunk = json.dumps(chunk)
+                            print(f"Yielding final chunk to JanitorAI: {json_chunk}")
+                            yield f"data: {json_chunk}\n\n"
                     except json.JSONDecodeError as e:
                         print(f"Final buffer JSON Decode Error: {e} for buffer: {buffer[:100]}...")
                     except Exception as e:
